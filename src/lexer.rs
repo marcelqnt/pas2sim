@@ -1,8 +1,10 @@
 use anyhow::Context;
+use ordered_float::OrderedFloat;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Token {
     UnsignedInteger(u64),
+    UnsignedFloat(OrderedFloat<f64>),
     Identifier(String),
     ConstantString(String),
     CommentSlash(String),
@@ -199,11 +201,24 @@ pub fn tokenize(code: &str) -> anyhow::Result<Vec<Token>> {
 
             Some(Token::UnsignedInteger(_)) => match c {
                 '0'..='9' => parser.curr_token_str.push(c),
+                '.' => {
+                    parser.curr_token_str.push(c);
+                    parser.curr_token = Some(Token::UnsignedFloat(0.0.into()));
+                }
                 _ => parser.finish_token_with_position_reset(Token::UnsignedInteger(
                     parser
                         .curr_token_str
                         .parse()
                         .context("failed to pass unsigned integer token")?,
+                )),
+            },
+            Some(Token::UnsignedFloat(_)) => match c {
+                '0'..='9' => parser.curr_token_str.push(c),
+                _ => parser.finish_token_with_position_reset(Token::UnsignedFloat(
+                    parser
+                        .curr_token_str
+                        .parse()
+                        .context("failed to pass unsigned float token")?,
                 )),
             },
             Some(Token::Identifier(_)) => match c {
@@ -348,6 +363,8 @@ mod tests {
     test_single_token!(uint, Token::UnsignedInteger(124), "124");
 
     test_single_token!(identifier, Token::Identifier("qwer2t".into()), "qwer2T");
+
+    test_single_token!(floating, Token::UnsignedFloat(12.052.into()), "012.0520");
 
     test_multiple_token!(
         number_slash_letters,
