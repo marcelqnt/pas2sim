@@ -1,7 +1,7 @@
 use anyhow::Context;
 use ordered_float::OrderedFloat;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     UnsignedInteger(u64),
     UnsignedFloat(OrderedFloat<f64>),
@@ -84,6 +84,32 @@ pub enum Token {
     Exit,
     Continue,
     Break,
+}
+
+impl Token {
+    pub fn unsigned_integer(n: u64) -> Self {
+        Self::UnsignedInteger(n)
+    }
+
+    pub fn unsigned_float(n: f64) -> Self {
+        Self::UnsignedFloat(n.into())
+    }
+
+    pub fn identifier(s: impl Into<String>) -> Self {
+        Self::Identifier(s.into())
+    }
+
+    pub fn constant_string(s: impl Into<String>) -> Self {
+        Self::ConstantString(s.into())
+    }
+
+    pub fn comment_slash(s: impl Into<String>) -> Self {
+        Self::CommentSlash(s.into())
+    }
+
+    pub fn comment_bracket(s: impl Into<String>) -> Self {
+        Self::CommentBracket(s.into())
+    }
 }
 
 struct Parser<'a> {
@@ -335,7 +361,7 @@ pub fn tokenize(code: &str) -> anyhow::Result<Vec<Token>> {
 mod tests {
     use super::*;
 
-    macro_rules! test_single_token {
+    macro_rules! test_token {
         ($name:ident, $token:expr, $input:expr) => {
             #[test]
             fn $name() {
@@ -344,7 +370,7 @@ mod tests {
         };
     }
 
-    macro_rules! test_multiple_token {
+    macro_rules! test_tokens {
         ($name:ident, [$($token:expr),*], $input:expr) => {
             #[test]
             fn $name() {
@@ -360,13 +386,13 @@ mod tests {
         assert!(tokenize("§").is_err());
     }
 
-    test_single_token!(uint, Token::UnsignedInteger(124), "124");
+    test_token!(uint, Token::UnsignedInteger(124), "124");
 
-    test_single_token!(identifier, Token::Identifier("qwer2t".into()), "qwer2T");
+    test_token!(identifier, Token::Identifier("qwer2t".into()), "qwer2T");
 
-    test_single_token!(floating, Token::UnsignedFloat(12.052.into()), "012.0520");
+    test_token!(floating, Token::UnsignedFloat(12.052.into()), "012.0520");
 
-    test_multiple_token!(
+    test_tokens!(
         number_slash_letters,
         [
             Token::UnsignedInteger(124),
@@ -376,7 +402,7 @@ mod tests {
         "124/abs"
     );
 
-    test_multiple_token!(
+    test_tokens!(
         slash_comment,
         [
             Token::UnsignedInteger(123),
@@ -386,13 +412,13 @@ mod tests {
         "123 //vier\nabc"
     );
 
-    test_single_token!(
+    test_token!(
         constant_string,
         Token::ConstantString("einszwei'vier".into()),
         "'einszwei''vier'"
     );
 
-    test_multiple_token!(
+    test_tokens!(
         bracket_comment,
         [
             Token::UnsignedInteger(445),
@@ -402,17 +428,17 @@ mod tests {
         "445    {Testumgebung}   aw_r"
     );
 
-    test_multiple_token!(
+    test_tokens!(
         dotdotdot,
         [
-            Token::DoublePoint,
-            Token::UnsignedInteger(545),
-            Token::Point
+            Token::Point,
+            Token::Identifier("abcsd".into()),
+            Token::DoublePoint
         ],
-        "..545."
+        ".abcsd.."
     );
 
-    test_multiple_token!(
+    test_tokens!(
         semi_colon,
         [
             Token::Identifier("a".into()),
@@ -425,7 +451,7 @@ mod tests {
         "A := b : c;"
     );
 
-    test_multiple_token!(
+    test_tokens!(
         punctuation,
         [
             Token::Point,
@@ -447,7 +473,7 @@ mod tests {
         ".,-+;::==<<=>>=<>^*"
     );
 
-    test_multiple_token!(
+    test_tokens!(
         keywords,
         [
             Token::Identifier("andor".into()),

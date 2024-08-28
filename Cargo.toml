@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.86"
 ordered-float = "4.2.2"
+thiserror = "1.0.63"
