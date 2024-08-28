@@ -84,6 +84,7 @@ pub enum Token {
     Exit,
     Continue,
     Break,
+    Eof,
 }
 
 impl Token {

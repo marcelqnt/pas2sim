@@ -2,6 +2,7 @@ use anyhow::Context;
 use ordered_float::OrderedFloat;
 
 use crate::lexer::Token;
+use crate::new_parser::{Parseable, TokenParser};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnsignedConstant {
@@ -12,11 +13,9 @@ pub enum UnsignedConstant {
     String(String),
 }
 
-pub fn parse_unsigned_constant(
-    next_tokens: &[Token],
-) -> anyhow::Result<(UnsignedConstant, &[Token])> {
+pub fn parse_unsigned_constant(input: &[Token]) -> anyhow::Result<(UnsignedConstant, &[Token])> {
     use UnsignedConstant::*;
-    let res = match next_tokens {
+    let res = match input {
         [Token::Identifier(s)] => Identifier(s.clone()),
         [Token::UnsignedInteger(u)] => UnsignedInteger(*u),
         [Token::UnsignedFloat(f)] => UnsignedFloat(*f),
@@ -25,12 +24,12 @@ pub fn parse_unsigned_constant(
         _ => {
             return Err(anyhow::anyhow!(
                 "Unexpected next token for unsigned constant: {:?}",
-                next_tokens.first()
+                input.first()
             ))
         }
     };
 
-    Ok((res, &next_tokens[1..]))
+    Ok((res, &input[1..]))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,63 +39,39 @@ pub enum Constant {
     Number(Number),
 }
 
-impl Constant {
-    pub fn parse(next_tokens: &[Token]) -> Result<(Constant, &[Token]), ParseError> {
-        let mut i = 0;
-        let mut sign = None;
-        let res = loop {
-            match &next_tokens[i..] {
-                [Token::Identifier(s), ..] => {
-                    break Constant::Identifier(ConstantIdentifier {
-                        name: s.clone(),
-                        sign,
-                    })
-                }
-                [Token::UnsignedInteger(u), ..] if sign.map(Sign::is_plus).unwrap_or(true) => {
-                    break Constant::Number(Number::Unsigned(*u))
-                }
-                [Token::UnsignedInteger(u), ..] if sign.map(Sign::is_minus).unwrap_or(false) => {
-                    let i: i64 = (*u)
-                        .try_into()
-                        .context("failed to convert number to signed integer")?;
-                    break Constant::Number(Number::Signed(-i));
-                }
-                [Token::UnsignedFloat(f), ..] if sign.map(Sign::is_plus).unwrap_or(true) => {
-                    break Constant::Number(Number::Real(*f))
-                }
-                [Token::UnsignedFloat(f), ..] if sign.map(Sign::is_minus).unwrap_or(false) => {
-                    break Constant::Number(Number::Real(-f))
-                }
-                [Token::ConstantString(s), ..] => break Constant::Literal(s.clone()),
-                [Token::Plus, Token::Plus, ..]
-                | [Token::Minus, Token::Minus, ..]
-                | [Token::Plus, Token::Minus, ..]
-                | [Token::Minus, Token::Plus, ..] => {
-                    return Err(ParseError::UnexpectedToken(
-                        next_tokens.first().cloned(),
-                        "no double sign is allowed".into(),
-                    ));
-                }
-                [Token::Plus, ..] => {
-                    i += 1;
-                    sign = Some(Sign::Plus)
-                }
-                [Token::Minus, ..] => {
-                    i += 1;
-                    sign = Some(Sign::Minus)
-                }
-                _ => {
-                    return Err(ParseError::UnexpectedToken(
-                        next_tokens.first().cloned(),
-                        "unexpected next token for signed constant".into(),
-                    ));
-                }
-            };
+impl Parseable for Constant {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let sign = parser.parse::<Option<Sign>>()?;
+
+        let res = match parser.advance() {
+            Token::Identifier(ident) => Constant::Identifier(ConstantIdentifier {
+                name: ident.clone(),
+                sign,
+            }),
+            Token::UnsignedInteger(u) if sign.map(Sign::is_plus).unwrap_or(true) => {
+                Constant::Number(Number::Unsigned(*u))
+            }
+            Token::UnsignedInteger(u) if sign.map(Sign::is_minus).unwrap_or(false) => {
+                let i: i64 = (*u)
+                    .try_into()
+                    .context("failed to convert number to signed integer")?;
+                Constant::Number(Number::Signed(-i))
+            }
+            Token::UnsignedFloat(f) if sign.map(Sign::is_plus).unwrap_or(true) => {
+                Constant::Number(Number::Real(*f))
+            }
+            Token::UnsignedFloat(f) if sign.map(Sign::is_minus).unwrap_or(false) => {
+                Constant::Number(Number::Real(-f))
+            }
+            Token::ConstantString(s) => Constant::Literal(s.clone()),
+            _ => parser.unexpected_token("expected constant")?,
         };
 
-        Ok((res, &next_tokens[i + 1..]))
+        Ok(res)
     }
+}
 
+impl Constant {
     pub fn identifier(name: impl Into<String>, sign: impl Into<Option<Sign>>) -> Self {
         Constant::Identifier(ConstantIdentifier {
             name: name.into(),
@@ -162,7 +137,41 @@ pub enum Sign {
     Minus,
 }
 
+impl Parseable for Sign {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        const SIGNS: &[Token] = &[Token::Plus, Token::Minus];
+        let sign = match parser.one_of(SIGNS) {
+            Ok(s) => s,
+            Err(_) => return parser.unexpected_token("expected sign"),
+        };
+
+        if parser.one_of(SIGNS).is_ok() {
+            return parser.unexpected_token("no double sign is allowed");
+        }
+
+        let sign = match sign {
+            Token::Plus => Sign::Plus,
+            Token::Minus => Sign::Minus,
+            _ => unreachable!(),
+        };
+
+        Ok(sign)
+    }
+}
+
+impl Parseable for Option<Sign> {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        if Sign::SIGNS.contains(parser.peek()) {
+            Ok(Some(parser.parse()?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 impl Sign {
+    const SIGNS: &[Token] = &[Token::Plus, Token::Minus];
+
     fn is_plus(self) -> bool {
         match self {
             Sign::Plus => true,
@@ -205,15 +214,24 @@ pub enum SimpleType {
     StaticArray(Constant, Constant),
 }
 
+impl Parseable for SimpleType {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError>
+    where
+        Self: Sized,
+    {
+        todo!()
+    }
+}
+
 impl SimpleType {
-    pub fn parse(next_tokens: &[Token]) -> anyhow::Result<(Self, &[Token])> {
+    pub fn parse_old(input: &[Token]) -> anyhow::Result<(Self, &[Token])> {
         let mut i = 0;
         let mut ordinaries = Vec::new();
         let mut mode = None;
 
         let res = loop {
             if i == 0 {
-                if let Ok((c, [Token::DoublePoint, rest @ ..])) = Constant::parse(next_tokens) {
+                if let Ok((c, [Token::DoublePoint, rest @ ..])) = Constant::parse(input) {
                     match Constant::parse(rest) {
                         Ok((c2, rest)) => return Ok((SimpleType::StaticArray(c, c2), rest)),
                         Err(e) => return Err(e.into()),
@@ -221,7 +239,7 @@ impl SimpleType {
                 }
             }
 
-            match &next_tokens[i..] {
+            match &input[i..] {
                 [Token::LeftParen, ..] => {
                     i += 1;
                     mode = Some(SimpleType::Ordinal(Vec::new()));
@@ -234,7 +252,7 @@ impl SimpleType {
                         _ => {
                             return Err(anyhow::anyhow!(
                                 "Unexpected next token for simple type (solo/ordinary): {:?}",
-                                next_tokens.first()
+                                input.first()
                             ))
                         }
                     }
@@ -249,13 +267,13 @@ impl SimpleType {
                 _ => {
                     return Err(anyhow::anyhow!(
                         "Unexpected next token for simple type: {:?}",
-                        next_tokens.first()
+                        input.first()
                     ))
                 }
             }
         };
 
-        Ok((res, &next_tokens[(i + 1).min(next_tokens.len())..]))
+        Ok((res, &input[(i + 1).min(input.len())..]))
     }
 
     pub fn solo_type(name: impl Into<String>) -> Self {
@@ -281,10 +299,142 @@ pub enum Type {
     Record(Vec<Field>),
 }
 
+impl Parseable for Type {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        match parser.advance() {
+            Token::Caret => {
+                if let Token::Identifier(ident) = parser.advance() {
+                    Ok(Type::PointerOf(ident.clone()))
+                } else {
+                    parser.unexpected_token("expected identifier after pointer")
+                }
+            }
+            Token::Array => {
+                parser.expect(&Token::LeftSquareBracket)?;
+
+                let mut types = Vec::new();
+
+                loop {
+                    let simple_type = parser.parse()?;
+                    types.push(simple_type);
+
+                    if let Token::RightSquareBracket =
+                        parser.one_of(&[Token::Comma, Token::RightSquareBracket])?
+                    {
+                        break;
+                    }
+                }
+
+                parser.expect(&Token::Of)?;
+                let t = parser.parse()?;
+
+                Ok(Type::StaticArray(types, Box::new(t)))
+            }
+            Token::File => {
+                parser.expect(&Token::Of)?;
+                let t = parser.parse()?;
+                Ok(Type::File(Box::new(t)))
+            }
+            Token::Set => {
+                parser.expect(&Token::Of)?;
+                let t = parser.parse()?;
+                Ok(Type::Set(t))
+            }
+            Token::Record => {
+                let mut fields = Vec::new();
+                loop {
+                    let name = parser.expect_identifier()?;
+                    parser.expect(&Token::Colon)?;
+                    let typ = parser.parse()?;
+                    fields.push(Field {
+                        name: name.to_owned(),
+                        typ,
+                    });
+
+                    if let Token::Semicolon = parser.advance() {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+
+                Ok(Type::Record(fields))
+            }
+            _ => {
+                let t = parser.parse()?;
+                Ok(Type::SimpleType(t))
+
+                // parser.unexpected_token("expected ")}
+            }
+        }
+    }
+
+    // pub fn parse(input: &[Token]) -> anyhow::Result<(Self, &[Token])> {
+    //     enum Expected {
+    //         None,
+    //         StaticArray,
+    //     }
+
+    //     let mut expected = Expected::None;
+    //     let mut i = 0;
+
+    //     match input {
+    //         [Token::Caret, Token::Identifier(ident), ..] => {
+    //             Ok((Type::PointerOf(ident.clone()), &input[2..]))
+    //         }
+    //         [Token::Array, Token::LeftSquareBracket, ..] => {
+    //             i = 2;
+    //             expected = Expected::StaticArray;
+    //             let types = Vec::new();
+    //             loop {
+    //                 match input[i] {
+    //                     Token::RightSquareBracket => {
+    //                         i += 1;
+    //                         break;}
+    //                     Token::Comma => {
+    //                         i += 1;
+    //                     _ => types.push( )
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub name: String,
-    pub typ: Box<Type>,
+    pub typ: Type,
+}
+
+impl Field {
+    pub fn parse(parser: &mut TokenParser) -> Result<Vec<Self>, ParseError> {
+        let mut names = Vec::new();
+
+        loop {
+            let name = parser.expect_identifier()?;
+            names.push(name);
+
+            match parser.advance() {
+                Token::Colon => {
+                    break;
+                }
+                Token::Comma => {}
+                _ => return parser.unexpected_token("expected comma or colon"),
+            }
+        }
+
+        let typ = parser.parse::<Field>()?;
+
+        Ok(names
+            .into_iter()
+            .map(|name| Field {
+                name: name.to_owned(),
+                typ: typ.clone(),
+            })
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -297,7 +447,48 @@ pub enum VariableItem {
     Dereferenzation,
 }
 
-pub type Variable = Vec<VariableItem>;
+#[derive(Debug, Default, Clone, PartialEq, derive_more::Deref, derive_more::DerefMut)]
+pub struct Variable(Vec<VariableItem>);
+
+impl Variable {
+    pub fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        match parser.advance() {
+            Token::Identifier(var_or_field) => {
+                let mut final_variable = Variable::default();
+
+                final_variable.push(VariableItem::Field(var_or_field.clone()));
+
+                loop {
+                    match parser.advance() {
+                        Token::LeftSquareBracket => {
+                            let mut expressions = Vec::new();
+                            loop {
+                                let new_exp = parser.parse()?;
+                                expressions.push(Box::new(new_exp));
+
+                                if let Token::RightSquareBracket =
+                                    parser.one_of(&[Token::Comma, Token::RightSquareBracket])?
+                                {
+                                    break;
+                                }
+                            }
+                            final_variable.push(VariableItem::Array(expressions))
+                        }
+                        Token::Point => {
+                            let ident = parser.expect_identifier()?;
+                            final_variable.push(VariableItem::SubField(ident.to_string()));
+                        }
+                        Token::Caret => {
+                            final_variable.push(VariableItem::Dereferenzation);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => return parser.unexpected_token("expected variable or field identifier"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SingleExpressionArray {
@@ -365,6 +556,15 @@ pub enum OperatorTertiary {
 pub struct Expression {
     pub first_operand: SimpleExpression,
     pub following_operands: Vec<(OperatorTertiary, SimpleExpression)>,
+}
+
+impl Parseable for Expression {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError>
+    where
+        Self: Sized,
+    {
+        todo!()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,6 +1,7 @@
 use lexer::tokenize;
 
 pub mod lexer;
+pub mod new_parser;
 pub mod parser;
 
 fn main() {
