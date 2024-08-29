@@ -170,7 +170,7 @@ impl Parseable for Option<Sign> {
 }
 
 impl Sign {
-    const SIGNS: &[Token] = &[Token::Plus, Token::Minus];
+    const SIGNS: &'static [Token] = &[Token::Plus, Token::Minus];
 
     fn is_plus(self) -> bool {
         match self {
@@ -425,7 +425,7 @@ impl Field {
             }
         }
 
-        let typ = parser.parse::<Field>()?;
+        let typ = parser.parse::<Type>()?;
 
         Ok(names
             .into_iter()
@@ -496,10 +496,54 @@ pub enum SingleExpressionArray {
     Range(Box<Expression>, Box<Expression>),
 }
 
+impl SingleExpressionArray {
+    pub fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let e = parser.parse()?;
+        match parser.peek() {
+            Token::DoublePoint => {
+                parser.advance();
+                let e_last = parser.parse()?;
+                Ok(SingleExpressionArray::Range(Box::new(e), Box::new(e_last)))
+            }
+            _ => Ok(SingleExpressionArray::Single(Box::new(e))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionCall {
+pub struct FunctionCallOnlyFunction {
     pub name: String,
     pub parameters: Vec<Box<Expression>>,
+}
+
+impl FunctionCallOnlyFunction {
+    pub fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        match parser.advance() {
+            Token::Identifier(function_ident) => {
+                let mut new_function = FunctionCallOnlyFunction {
+                    name: function_ident.clone(),
+                    parameters: Vec::new(),
+                };
+                match parser.peek() {
+                    Token::LeftParen => loop {
+                        parser.advance();
+                        let new_param = parser.parse()?;
+                        new_function.parameters.push(Box::new(new_param));
+
+                        if let Token::RightParen =
+                            parser.one_of(&[Token::Comma, Token::RightParen])?
+                        {
+                            break;
+                        }
+                    },
+                    _ => {}
+                }
+                Ok(new_function)
+            }
+
+            _ => return parser.unexpected_token("function call"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -648,6 +692,12 @@ pub struct ForLoop {
     first: Expression,
     last: Expression,
     statement: Statement,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionCall {
+    pub name: String,
+    pub parameters: Vec<Box<Expression>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
