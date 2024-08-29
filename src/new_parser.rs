@@ -42,7 +42,7 @@ impl<'a> TokenParser<'a> {
             self.advance();
             Ok(token)
         } else {
-            todo!()
+            self.unexpected_token(format!("one of {:?}", expected))
         }
     }
 
@@ -52,7 +52,7 @@ impl<'a> TokenParser<'a> {
             self.advance();
             Ok(token)
         } else {
-            todo!()
+            self.unexpected_token(format!("{:?}", expected))
         }
     }
 
@@ -73,6 +73,10 @@ impl<'a> TokenParser<'a> {
 
     pub fn input(&self) -> &'a [Token] {
         self.input
+    }
+
+    pub fn step_back(&mut self, count: usize) {
+        self.position -= count;
     }
 
     pub fn parse<T: Parseable>(&mut self) -> Result<T, ParseError> {

@@ -37,6 +37,7 @@ pub enum Token {
 
     Assignment,
 
+    Not,
     And,
     Or,
     In,
@@ -252,6 +253,7 @@ pub fn tokenize(code: &str) -> anyhow::Result<Vec<Token>> {
                 '0'..='9' | 'a'..='z' | '_' => parser.curr_token_str.push(c),
                 _ => parser.finish_token_with_position_reset(
                     match parser.curr_token_str.clone().as_str() {
+                        "not" => Token::Not,
                         "and" => Token::And,
                         "or" => Token::Or,
                         "in" => Token::In,

@@ -37,6 +37,7 @@ pub enum Constant {
     Identifier(ConstantIdentifier),
     Literal(String),
     Number(Number),
+    Nil,
 }
 
 impl Parseable for Constant {
@@ -44,6 +45,7 @@ impl Parseable for Constant {
         let sign = parser.parse::<Option<Sign>>()?;
 
         let res = match parser.advance() {
+            Token::Nil => Constant::Nil,
             Token::Identifier(ident) => Constant::Identifier(ConstantIdentifier {
                 name: ident.clone(),
                 sign,
@@ -225,55 +227,56 @@ impl Parseable for SimpleType {
 
 impl SimpleType {
     pub fn parse_old(input: &[Token]) -> anyhow::Result<(Self, &[Token])> {
-        let mut i = 0;
-        let mut ordinaries = Vec::new();
-        let mut mode = None;
+        todo!();
+        // let mut i = 0;
+        // let mut ordinaries = Vec::new();
+        // let mut mode = None;
 
-        let res = loop {
-            if i == 0 {
-                if let Ok((c, [Token::DoublePoint, rest @ ..])) = Constant::parse(input) {
-                    match Constant::parse(rest) {
-                        Ok((c2, rest)) => return Ok((SimpleType::StaticArray(c, c2), rest)),
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-            }
+        // let res = loop {
+        //     if i == 0 {
+        //         if let Ok((c, [Token::DoublePoint, rest @ ..])) = Constant::parse(input) {
+        //             match Constant::parse(rest) {
+        //                 Ok((c2, rest)) => return Ok((SimpleType::StaticArray(c, c2), rest)),
+        //                 Err(e) => return Err(e.into()),
+        //             }
+        //         }
+        //     }
 
-            match &input[i..] {
-                [Token::LeftParen, ..] => {
-                    i += 1;
-                    mode = Some(SimpleType::Ordinal(Vec::new()));
-                }
-                [Token::Identifier(ident), ..] => {
-                    i += 1;
-                    match mode {
-                        Some(SimpleType::Ordinal(_)) => ordinaries.push(ident.clone()),
-                        None => break SimpleType::SoloType(ident.clone()),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "Unexpected next token for simple type (solo/ordinary): {:?}",
-                                input.first()
-                            ))
-                        }
-                    }
-                }
-                [Token::RightParen, ..] if matches!(mode, Some(SimpleType::Ordinal(_))) => {
-                    i += 1;
-                    break SimpleType::Ordinal(std::mem::take(&mut ordinaries));
-                }
-                [Token::Comma, ..] if matches!(mode, Some(SimpleType::Ordinal(_))) => {
-                    i += 1;
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Unexpected next token for simple type: {:?}",
-                        input.first()
-                    ))
-                }
-            }
-        };
+        //     match &input[i..] {
+        //         [Token::LeftParen, ..] => {
+        //             i += 1;
+        //             mode = Some(SimpleType::Ordinal(Vec::new()));
+        //         }
+        //         [Token::Identifier(ident), ..] => {
+        //             i += 1;
+        //             match mode {
+        //                 Some(SimpleType::Ordinal(_)) => ordinaries.push(ident.clone()),
+        //                 None => break SimpleType::SoloType(ident.clone()),
+        //                 _ => {
+        //                     return Err(anyhow::anyhow!(
+        //                         "Unexpected next token for simple type (solo/ordinary): {:?}",
+        //                         input.first()
+        //                     ))
+        //                 }
+        //             }
+        //         }
+        //         [Token::RightParen, ..] if matches!(mode, Some(SimpleType::Ordinal(_))) => {
+        //             i += 1;
+        //             break SimpleType::Ordinal(std::mem::take(&mut ordinaries));
+        //         }
+        //         [Token::Comma, ..] if matches!(mode, Some(SimpleType::Ordinal(_))) => {
+        //             i += 1;
+        //         }
+        //         _ => {
+        //             return Err(anyhow::anyhow!(
+        //                 "Unexpected next token for simple type: {:?}",
+        //                 input.first()
+        //             ))
+        //         }
+        //     }
+        // };
 
-        Ok((res, &input[(i + 1).min(input.len())..]))
+        // Ok((res, &input[(i + 1).min(input.len())..]))
     }
 
     pub fn solo_type(name: impl Into<String>) -> Self {
@@ -450,7 +453,7 @@ pub enum VariableItem {
 #[derive(Debug, Default, Clone, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 pub struct Variable(Vec<VariableItem>);
 
-impl Variable {
+impl Parsable for Variable {
     pub fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         match parser.advance() {
             Token::Identifier(var_or_field) => {
@@ -548,7 +551,7 @@ impl FunctionCallOnlyFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Factor {
-    UnsignedConstant(UnsignedConstant),
+    Constant(Constant),
     Variable(Variable),
     FunctionCall(FunctionCall),
     Expression(Box<Expression>),
@@ -556,11 +559,59 @@ pub enum Factor {
     ExpressionArrays(Vec<SingleExpressionArray>),
 }
 
+impl Parseable for Factor {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        match parser.advance() {
+            Token::Not => {
+                let factor = parser.parse()?;
+                Ok(Factor::LogicalInversion(Box::new(factor)))
+            }
+            Token::LeftParen => {
+                let e = parser.parse()?;
+                match parser.advance() {
+                    Token::RightParen => Ok(Factor::Expression(e)),
+                    _ => parser.unexpected_token("expected ')'"),
+                }
+            }
+            Token::LeftSquareBracket => {
+                let mut arrs = Vec::new();
+
+                loop {
+                    if parser.expect(&Token::RightSquareBracket).is_ok() {
+                        return Ok(Factor::ExpressionArrays(arrs));
+                    }
+
+                    let arr = parser.parse()?;
+                    arrs.push(Factor::ExpressionArrays(arr));
+
+                    parser.expect(&Token::Comma).ok();
+                }
+            }
+            token => {
+                parser.step_back(1);
+                if let Ok(c) = parser.parse() {
+                    return Ok(Factor::Constant(c));
+                }
+
+                if let Ok(v) = parser.parse() {
+                    return Ok(Factor::Variable(v));
+                }
+
+                if let Ok(f) = parser.parse() {
+                    return Ok(Factor::FunctionCall(f));
+                }
+
+                parser.unexpected_token("expected factor")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatorPrimary {
     Multiply,
     Divide,
-    IntegerMultiply,
+    IntegerDivide,
     Modulo,
     And,
 }
@@ -569,6 +620,40 @@ pub enum OperatorPrimary {
 pub struct Term {
     pub first_factor: Factor,
     pub following_factors: Vec<(OperatorPrimary, Factor)>,
+}
+
+impl Parseable for Term {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let first_factor = parser.parse()?;
+
+        let mut res = Term {
+            first_factor,
+            following_factors: Vec::new(),
+        };
+        loop {
+            if let Ok(operator) = parser.one_of(&[
+                Token::Asterisk,
+                Token::Slash,
+                Token::Div,
+                Token::Mod,
+                Token::And,
+            ]) {
+                let factor = parser.parse()?;
+                match operator {
+                    Token::Asterisk => Ok((OperatorPrimary::Multiply, factor)),
+                    Token::Slash => Ok((OperatorPrimary::Divide, factor)),
+                    Token::Div => Ok((OperatorPrimary::IntegerDivide, factor)),
+                    Token::Mod => Ok((OperatorPrimary::Modulo, factor)),
+                    Token::And => Ok((OperatorPrimary::And, factor)),
+                    _ => parser.unexpected_token("expected primary operator"),
+                }
+                res.follow_factor.push((factor, operator));
+            } else {
+                break;
+            }
+        }
+        Ok(res)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -583,6 +668,41 @@ pub struct SimpleExpression {
     pub pre_sign: Option<Sign>,
     pub first_summand: Term,
     pub following_summands: Vec<(OperatorSecondary, Term)>,
+}
+
+impl Parseable for SimpleExpression {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let mut pre_sign = None;
+        if let Ok(s) = parser.one_of(&[Token::Plus, Token::Minus]) {
+            match s {
+                Token::Plus => pre_sign = Some(Sign::Plus),
+                _ => pre_sign = Some(Sign::Minus),
+            }
+        }
+
+        let first_summand = parser.parse()?;
+
+        let mut res = SimpleExpression {
+            pre_sign,
+            first_summand,
+            following_summands: Vec::new(),
+        };
+        loop {
+            if let Ok(operator) = parser.one_of(&[Token::Plus, Token::Minus, Token::Or]) {
+                let summand = parser.parse()?;
+                match operator {
+                    Token::Plus => Ok((OperatorSecondary::Plus, summand)),
+                    Token::Minus => Ok((OperatorSecondary::Minus, summand)),
+                    Token::Or => Ok((OperatorSecondary::Or, summand)),
+                    _ => parser.unexpected_token("expected secondary operator"),
+                }
+                res.following_summands.push((summand, operator));
+            } else {
+                break;
+            }
+        }
+        Ok(res)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,11 +723,40 @@ pub struct Expression {
 }
 
 impl Parseable for Expression {
-    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError>
-    where
-        Self: Sized,
-    {
-        todo!()
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let first_operand = parser.parse()?;
+
+        let mut res = Expression {
+            first_operand,
+            following_operands: Vec::new(),
+        };
+        loop {
+            if let Ok(operator) = parser.one_of(&[
+                Token::Equal,
+                Token::Smaller,
+                Token::Greater,
+                Token::NotEqual,
+                Token::SmallerOrEqual,
+                Token::GreateOrEqual,
+                Token::In,
+            ]) {
+                let operand = parser.parse()?;
+                match operator {
+                    Token::Equal => Ok((OperatorTertiary::Equal, operand)),
+                    Token::Smaller => Ok((OperatorTertiary::Smaller, operand)),
+                    Token::Greate => Ok((OperatorTertiary::Greater, operand)),
+                    Token::NotEqual => Ok((OperatorTertiary::NotEqual, operand)),
+                    Token::SmallerOrEqual => Ok((OperatorTertiary::SmallerOrEqual, operand)),
+                    Token::GreateOrEqual => Ok((OperatorTertiary::GreaterOrEqual, operand)),
+                    Token::In => Ok((OperatorTertiary::In, operand)),
+                    _ => parser.unexpected_token("expected primary operator"),
+                }
+                res.following_operands.push((operator, operand));
+            } else {
+                break;
+            }
+        }
+        Ok(res)
     }
 }
 
