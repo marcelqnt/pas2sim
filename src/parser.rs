@@ -809,32 +809,32 @@ impl Parseable for FunctionParameterList {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct FunctionDefinition {
+pub struct FunctionDeclaration {
     pub function_identifier: String,
     pub parameters: FunctionParameterList,
     pub return_type: Option<String>,
     pub body: Box<Block>,
 }
 
-impl Parseable for FunctionDefinition {
+impl Parseable for FunctionDeclaration {
     fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         let t = parser.advance();
         match t {
             Token::Function | Token::Procedure => {
                 let ident = parser.expect_identifier()?;
-                let mut res = FunctionDefinition {
+                let mut res = FunctionDeclaration {
                     function_identifier: ident.into(),
                     ..Default::default()
                 };
                 res.parameters = parser.parse()?;
                 if let Token::Function = t {
-                    parser.expect(&Token::Colon);
+                    parser.expect(&Token::Colon)?;
                     res.return_type = Some(parser.expect_identifier()?.into());
                 }
-                parser.expect(&Token::Begin);
+                parser.expect(&Token::Begin)?;
                 let block = parser.parse()?;
                 res.body = Box::new(block);
-                parser.expect(&Token::End);
+                parser.expect(&Token::End)?;
                 Ok(res)
             }
             _ => parser.unexpected_token("expected function identifier"),
@@ -842,19 +842,85 @@ impl Parseable for FunctionDefinition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum BlockPreamble {
-    Label(Vec<Number>),
-    Const(Vec<(String, Constant)>),
-    Type(Vec<(String, Type)>),
-    Var(Vec<(String, Type)>),
-    FunctionCall(FunctionCall),
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Block {
-    pub pre_parts: Vec<BlockPreamble>,
+    pub consts: Vec<(String, Constant)>,
+    pub types: Vec<(String, Type)>,
+    pub variables: Vec<(String, Type)>,
+    pub function_declarations: Vec<FunctionDeclaration>,
     pub body: Vec<Statement>,
+}
+
+impl Parseable for Block {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let mut res = Block::default();
+
+        loop {
+            match parser.advance() {
+                Token::Const => loop {
+                    if let Ok(ident) = parser.expect_identifier() {
+                        parser.expect(&Token::Equal);
+                        let constant = parser.parse()?;
+                        res.consts.push((ident.into(), constant));
+
+                        parser.expect(&Token::Semicolon);
+                    } else {
+                        break;
+                    }
+                },
+                Token::Type => loop {
+                    if let Ok(ident) = parser.expect_identifier() {
+                        parser.expect(&Token::Equal);
+                        let typ = parser.parse()?;
+                        res.types.push((ident.into(), typ));
+
+                        parser.expect(&Token::Semicolon);
+                    } else {
+                        break;
+                    }
+                },
+                Token::Var => loop {
+                    if let Ok(pre_ident) = parser.expect_identifier() {
+                        let mut idents = Vec::new();
+                        idents.push(pre_ident.to_string());
+                        loop {
+                            match parser.advance() {
+                                Token::Comma => {}
+                                Token::Colon => break,
+                                _ => parser.unexpected_token("expected separator in var block")?,
+                            }
+                            idents.push(parser.expect_identifier()?.into());
+
+                            parser.expect(&Token::Semicolon);
+                        }
+                        let vartype = parser.parse()?;
+                        for ident in idents {
+                            res.variables.push((ident, vartype));
+                        }
+                    } else {
+                        break;
+                    }
+                },
+                Token::Procedure | Token::Function => {
+                    parser.step_back(1);
+                    res.function_declarations.push(parser.parse()?);
+                }
+
+                Token::Begin => break,
+                _ => parser.unexpected_token("expected block part")?,
+            }
+        }
+
+        loop {
+            res.body.push(parser.parse());
+            match parser.advance() {
+                Token::End => break,
+                &Token::Comma => {}
+                _ => parser.unexpected_token("expected expression seperator")?,
+            }
+        }
+        Ok(res)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
