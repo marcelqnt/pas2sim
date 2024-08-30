@@ -453,8 +453,8 @@ pub enum VariableItem {
 #[derive(Debug, Default, Clone, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 pub struct Variable(Vec<VariableItem>);
 
-impl Parsable for Variable {
-    pub fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+impl Parseable for Variable {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         match parser.advance() {
             Token::Identifier(var_or_field) => {
                 let mut final_variable = Variable::default();
@@ -488,7 +488,7 @@ impl Parsable for Variable {
                     }
                 }
             }
-            _ => return parser.unexpected_token("expected variable or field identifier"),
+            _ => parser.unexpected_token("expected variable or field identifier"),
         }
     }
 }
@@ -499,8 +499,8 @@ pub enum SingleExpressionArray {
     Range(Box<Expression>, Box<Expression>),
 }
 
-impl SingleExpressionArray {
-    pub fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+impl Parseable for SingleExpressionArray {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         let e = parser.parse()?;
         match parser.peek() {
             Token::DoublePoint => {
@@ -519,16 +519,16 @@ pub struct FunctionCallOnlyFunction {
     pub parameters: Vec<Box<Expression>>,
 }
 
-impl FunctionCallOnlyFunction {
-    pub fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+impl Parseable for FunctionCallOnlyFunction {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         match parser.advance() {
             Token::Identifier(function_ident) => {
                 let mut new_function = FunctionCallOnlyFunction {
                     name: function_ident.clone(),
                     parameters: Vec::new(),
                 };
-                match parser.peek() {
-                    Token::LeftParen => loop {
+                if let Token::LeftParen = parser.peek() {
+                    loop {
                         parser.advance();
                         let new_param = parser.parse()?;
                         new_function.parameters.push(Box::new(new_param));
@@ -538,13 +538,12 @@ impl FunctionCallOnlyFunction {
                         {
                             break;
                         }
-                    },
-                    _ => {}
+                    }
                 }
                 Ok(new_function)
             }
 
-            _ => return parser.unexpected_token("function call"),
+            _ => parser.unexpected_token("function call"),
         }
     }
 }
@@ -553,7 +552,7 @@ impl FunctionCallOnlyFunction {
 pub enum Factor {
     Constant(Constant),
     Variable(Variable),
-    FunctionCall(FunctionCall),
+    FunctionCall(FunctionCallOnlyFunction),
     Expression(Box<Expression>),
     LogicalInversion(Box<Factor>),
     ExpressionArrays(Vec<SingleExpressionArray>),
@@ -569,7 +568,7 @@ impl Parseable for Factor {
             Token::LeftParen => {
                 let e = parser.parse()?;
                 match parser.advance() {
-                    Token::RightParen => Ok(Factor::Expression(e)),
+                    Token::RightParen => Ok(Factor::Expression(Box::new(e))),
                     _ => parser.unexpected_token("expected ')'"),
                 }
             }
@@ -582,12 +581,12 @@ impl Parseable for Factor {
                     }
 
                     let arr = parser.parse()?;
-                    arrs.push(Factor::ExpressionArrays(arr));
+                    arrs.push(arr);
 
                     parser.expect(&Token::Comma).ok();
                 }
             }
-            token => {
+            _ => {
                 parser.step_back(1);
                 if let Ok(c) = parser.parse() {
                     return Ok(Factor::Constant(c));
@@ -630,27 +629,22 @@ impl Parseable for Term {
             first_factor,
             following_factors: Vec::new(),
         };
-        loop {
-            if let Ok(operator) = parser.one_of(&[
-                Token::Asterisk,
-                Token::Slash,
-                Token::Div,
-                Token::Mod,
-                Token::And,
-            ]) {
-                let factor = parser.parse()?;
-                match operator {
-                    Token::Asterisk => Ok((OperatorPrimary::Multiply, factor)),
-                    Token::Slash => Ok((OperatorPrimary::Divide, factor)),
-                    Token::Div => Ok((OperatorPrimary::IntegerDivide, factor)),
-                    Token::Mod => Ok((OperatorPrimary::Modulo, factor)),
-                    Token::And => Ok((OperatorPrimary::And, factor)),
-                    _ => parser.unexpected_token("expected primary operator"),
-                }
-                res.follow_factor.push((factor, operator));
-            } else {
-                break;
-            }
+        while let Ok(operator) = parser.one_of(&[
+            Token::Asterisk,
+            Token::Slash,
+            Token::Div,
+            Token::Mod,
+            Token::And,
+        ]) {
+            let factor = parser.parse()?;
+            let following_factor = match operator {
+                Token::Slash => (OperatorPrimary::Divide, factor),
+                Token::Div => (OperatorPrimary::IntegerDivide, factor),
+                Token::Mod => (OperatorPrimary::Modulo, factor),
+                Token::And => (OperatorPrimary::And, factor),
+                _ => (OperatorPrimary::Multiply, factor),
+            };
+            res.following_factors.push(following_factor);
         }
         Ok(res)
     }
@@ -687,19 +681,14 @@ impl Parseable for SimpleExpression {
             first_summand,
             following_summands: Vec::new(),
         };
-        loop {
-            if let Ok(operator) = parser.one_of(&[Token::Plus, Token::Minus, Token::Or]) {
-                let summand = parser.parse()?;
-                match operator {
-                    Token::Plus => Ok((OperatorSecondary::Plus, summand)),
-                    Token::Minus => Ok((OperatorSecondary::Minus, summand)),
-                    Token::Or => Ok((OperatorSecondary::Or, summand)),
-                    _ => parser.unexpected_token("expected secondary operator"),
-                }
-                res.following_summands.push((summand, operator));
-            } else {
-                break;
-            }
+        while let Ok(operator) = parser.one_of(&[Token::Plus, Token::Minus, Token::Or]) {
+            let summand = parser.parse()?;
+            let follow_summand = match operator {
+                Token::Minus => (OperatorSecondary::Minus, summand),
+                Token::Or => (OperatorSecondary::Or, summand),
+                _ => (OperatorSecondary::Plus, summand),
+            };
+            res.following_summands.push(follow_summand);
         }
         Ok(res)
     }
@@ -730,31 +719,26 @@ impl Parseable for Expression {
             first_operand,
             following_operands: Vec::new(),
         };
-        loop {
-            if let Ok(operator) = parser.one_of(&[
-                Token::Equal,
-                Token::Smaller,
-                Token::Greater,
-                Token::NotEqual,
-                Token::SmallerOrEqual,
-                Token::GreateOrEqual,
-                Token::In,
-            ]) {
-                let operand = parser.parse()?;
-                match operator {
-                    Token::Equal => Ok((OperatorTertiary::Equal, operand)),
-                    Token::Smaller => Ok((OperatorTertiary::Smaller, operand)),
-                    Token::Greate => Ok((OperatorTertiary::Greater, operand)),
-                    Token::NotEqual => Ok((OperatorTertiary::NotEqual, operand)),
-                    Token::SmallerOrEqual => Ok((OperatorTertiary::SmallerOrEqual, operand)),
-                    Token::GreateOrEqual => Ok((OperatorTertiary::GreaterOrEqual, operand)),
-                    Token::In => Ok((OperatorTertiary::In, operand)),
-                    _ => parser.unexpected_token("expected primary operator"),
-                }
-                res.following_operands.push((operator, operand));
-            } else {
-                break;
-            }
+        while let Ok(operator) = parser.one_of(&[
+            Token::Equal,
+            Token::Smaller,
+            Token::Greater,
+            Token::NotEqual,
+            Token::SmallerOrEqual,
+            Token::GreateOrEqual,
+            Token::In,
+        ]) {
+            let operand = parser.parse()?;
+            let following_operands = match operator {
+                Token::Smaller => (OperatorTertiary::Smaller, operand),
+                Token::Greater => (OperatorTertiary::Greater, operand),
+                Token::NotEqual => (OperatorTertiary::NotEqual, operand),
+                Token::SmallerOrEqual => (OperatorTertiary::SmallerOrEqual, operand),
+                Token::GreateOrEqual => (OperatorTertiary::GreaterOrEqual, operand),
+                Token::In => (OperatorTertiary::In, operand),
+                _ => (OperatorTertiary::Equal, operand),
+            };
+            res.following_operands.push(following_operands);
         }
         Ok(res)
     }
@@ -773,14 +757,89 @@ pub struct FunctionParameter {
     pub typ: String,
 }
 
-pub type FunctionParameterList = Vec<FunctionParameter>;
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FunctionParameterList(Vec<FunctionParameter>);
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Function {
+impl Parseable for FunctionParameterList {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let mut fp = Vec::new();
+
+        if parser.expect(&Token::LeftParen).is_ok() {
+            loop {
+                let mut as_pointer = ParameterAs::Value;
+                if parser.expect(&Token::Var).is_ok() {
+                    as_pointer = ParameterAs::Pointer;
+                }
+
+                let mut parameters = Vec::new();
+                loop {
+                    if let Ok(ident) = parser.expect_identifier() {
+                        parameters.push(ident);
+                    } else {
+                        parser.unexpected_token("expected function parameter identifier")?;
+                    }
+
+                    match parser.advance() {
+                        Token::Colon => break,
+                        Token::Comma => {}
+                        _ => parser.unexpected_token("expected function parameter seperator")?,
+                    }
+                }
+
+                let typ = parser.expect_identifier()?;
+
+                for parameter in parameters {
+                    fp.push(FunctionParameter {
+                        as_pointer,
+                        parameter: parameter.into(),
+                        typ: typ.into(),
+                    })
+                }
+
+                match parser.advance() {
+                    Token::RightParen => break,
+                    Token::Semicolon => {}
+                    _ => parser.unexpected_token("expected function parameter end")?,
+                }
+            }
+        }
+
+        Ok(FunctionParameterList(fp))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FunctionDefinition {
     pub function_identifier: String,
     pub parameters: FunctionParameterList,
     pub return_type: Option<String>,
     pub body: Box<Block>,
+}
+
+impl Parseable for FunctionDefinition {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let t = parser.advance();
+        match t {
+            Token::Function | Token::Procedure => {
+                let ident = parser.expect_identifier()?;
+                let mut res = FunctionDefinition {
+                    function_identifier: ident.into(),
+                    ..Default::default()
+                };
+                res.parameters = parser.parse()?;
+                if let Token::Function = t {
+                    parser.expect(&Token::Colon);
+                    res.return_type = Some(parser.expect_identifier()?.into());
+                }
+                parser.expect(&Token::Begin);
+                let block = parser.parse()?;
+                res.body = Box::new(block);
+                parser.expect(&Token::End);
+                Ok(res)
+            }
+            _ => parser.unexpected_token("expected function identifier"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -792,7 +851,7 @@ pub enum BlockPreamble {
     FunctionCall(FunctionCall),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Block {
     pub pre_parts: Vec<BlockPreamble>,
     pub body: Vec<Statement>,
