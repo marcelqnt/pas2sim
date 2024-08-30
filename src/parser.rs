@@ -514,16 +514,16 @@ impl Parseable for SingleExpressionArray {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionCallOnlyFunction {
+pub struct FunctionCall {
     pub name: String,
     pub parameters: Vec<Box<Expression>>,
 }
 
-impl Parseable for FunctionCallOnlyFunction {
+impl Parseable for FunctionCall {
     fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         match parser.advance() {
             Token::Identifier(function_ident) => {
-                let mut new_function = FunctionCallOnlyFunction {
+                let mut new_function = FunctionCall {
                     name: function_ident.clone(),
                     parameters: Vec::new(),
                 };
@@ -552,7 +552,7 @@ impl Parseable for FunctionCallOnlyFunction {
 pub enum Factor {
     Constant(Constant),
     Variable(Variable),
-    FunctionCall(FunctionCallOnlyFunction),
+    FunctionCall(FunctionCall),
     Expression(Box<Expression>),
     LogicalInversion(Box<Factor>),
     ExpressionArrays(Vec<SingleExpressionArray>),
@@ -857,30 +857,26 @@ impl Parseable for Block {
 
         loop {
             match parser.advance() {
-                Token::Const => loop {
-                    if let Ok(ident) = parser.expect_identifier() {
-                        parser.expect(&Token::Equal);
+                Token::Const => {
+                    while let Ok(ident) = parser.expect_identifier() {
+                        parser.expect(&Token::Equal)?;
                         let constant = parser.parse()?;
                         res.consts.push((ident.into(), constant));
 
-                        parser.expect(&Token::Semicolon);
-                    } else {
-                        break;
+                        parser.expect(&Token::Semicolon)?;
                     }
-                },
-                Token::Type => loop {
-                    if let Ok(ident) = parser.expect_identifier() {
-                        parser.expect(&Token::Equal);
+                }
+                Token::Type => {
+                    while let Ok(ident) = parser.expect_identifier() {
+                        parser.expect(&Token::Equal)?;
                         let typ = parser.parse()?;
                         res.types.push((ident.into(), typ));
 
-                        parser.expect(&Token::Semicolon);
-                    } else {
-                        break;
+                        parser.expect(&Token::Semicolon)?;
                     }
-                },
-                Token::Var => loop {
-                    if let Ok(pre_ident) = parser.expect_identifier() {
+                }
+                Token::Var => {
+                    while let Ok(pre_ident) = parser.expect_identifier() {
                         let mut idents = Vec::new();
                         idents.push(pre_ident.to_string());
                         loop {
@@ -891,16 +887,14 @@ impl Parseable for Block {
                             }
                             idents.push(parser.expect_identifier()?.into());
 
-                            parser.expect(&Token::Semicolon);
+                            parser.expect(&Token::Semicolon)?;
                         }
-                        let vartype = parser.parse()?;
+                        let vartype: Type = parser.parse()?;
                         for ident in idents {
-                            res.variables.push((ident, vartype));
+                            res.variables.push((ident, vartype.clone()));
                         }
-                    } else {
-                        break;
                     }
-                },
+                }
                 Token::Procedure | Token::Function => {
                     parser.step_back(1);
                     res.function_declarations.push(parser.parse()?);
@@ -912,7 +906,7 @@ impl Parseable for Block {
         }
 
         loop {
-            res.body.push(parser.parse());
+            res.body.push(parser.parse()?);
             match parser.advance() {
                 Token::End => break,
                 &Token::Comma => {}
@@ -926,8 +920,24 @@ impl Parseable for Block {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IfCondition {
     condition: Expression,
-    statements: Box<Statement>,
+    statement: Box<Statement>,
     else_statements: Option<Box<Statement>>,
+}
+
+impl Parseable for IfCondition {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let condition = parser.parse()?;
+        parser.expect(&Token::Then)?;
+        let mut res: IfCondition = IfCondition {
+            condition,
+            statement: Box::new(parser.parse()?),
+            else_statements: None,
+        };
+        if parser.expect(&Token::Else).is_ok() {
+            res.else_statements = Some(Box::new(parser.parse()?));
+        }
+        Ok(res)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -939,7 +949,48 @@ pub struct CaseItems {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Case {
     expression: Expression,
-    items: CaseItems,
+    items: Vec<CaseItems>,
+    else_statement: Option<Box<Statement>>,
+}
+
+impl Parseable for Case {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let expression = parser.parse()?;
+        let mut res = Case {
+            expression,
+            items: Vec::new(),
+            else_statement: None,
+        };
+        parser.expect(&Token::Of)?;
+        loop {
+            let mut constants = Vec::new();
+            loop {
+                constants.push(parser.parse()?);
+                match parser.advance() {
+                    Token::Comma => {}
+                    Token::Colon => break,
+                    _ => parser.unexpected_token("expected case constant separator")?,
+                }
+            }
+            res.items.push(CaseItems {
+                constants,
+                statement: Box::new(parser.parse()?),
+            });
+            parser.expect(&Token::Semicolon)?;
+
+            if let Ok(s) = parser.one_of(&[Token::Else, Token::End]) {
+                if s.clone() == Token::Else {
+                    res.else_statement = Some(Box::new(parser.parse()?));
+                    parser.expect(&Token::Semicolon)?;
+                    parser.expect(&Token::End)?;
+                    break;
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(res)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -948,10 +999,38 @@ pub struct WhileLoop {
     statement: Box<Statement>,
 }
 
+impl Parseable for WhileLoop {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let check = parser.parse()?;
+        parser.expect(&Token::Do)?;
+        let statement = Box::new(parser.parse()?);
+        Ok(WhileLoop { check, statement })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepeatLoop {
     statements: Vec<Statement>,
-    check: Expression,
+    check_until: Expression,
+}
+
+impl Parseable for RepeatLoop {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let mut statements = Vec::new();
+        loop {
+            statements.push(parser.parse()?);
+
+            match parser.advance() {
+                Token::Repeat => break,
+                Token::Semicolon => {}
+                _ => parser.unexpected_token("expected repeat statement separator")?,
+            }
+        }
+        Ok(RepeatLoop {
+            statements,
+            check_until: parser.parse()?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -965,13 +1044,33 @@ pub struct ForLoop {
     var_name: String,
     first: Expression,
     last: Expression,
+    direction: ForLoopDirection,
     statement: Statement,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FunctionCall {
-    pub name: String,
-    pub parameters: Vec<Box<Expression>>,
+impl Parseable for ForLoop {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        let var_name = parser.expect_identifier()?;
+        parser.expect(&Token::Assignments)?;
+
+        let first = parser.parse()?;
+
+        let mut predirection = parser.one_of(&[Token::To, Token::Downto])?;
+
+        let mut direction = ForLoopDirection::To;
+
+        match predirection{
+            Token::To => {},
+            Token::Downto => direction = ForLoopDirection::Downto,
+            _ => parser.unexpected_token("expected to or downto")?,
+        }
+
+        let last = parser.parse()?;
+        parser.expect(&Token::Do)?;
+
+todo!()
+        let mut res = ForLoop{var_name: var_name.into(), first, last, direction, parser.parse()?}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -985,55 +1084,14 @@ pub enum Statement {
     RepeatLoop(RepeatLoop),
 }
 
-// pub fn parse_main(next_tokens: &[Token]) -> anyhow::Result<Block> {
-//     let (block, _) = parse_block(next_tokens)?;
-//     Ok(block)
-// }
-
-// fn next_token_starts_block(next_token: &Token) -> bool {
-//     match next_token {
-//         Token::Label
-//         | Token::Const
-//         | Token::Type
-//         | Token::Var
-//         | Token::Procedure
-//         | Token::Function
-//         | Token::Begin => true,
-//         _ => false,
-//     }
-// }
-
-// fn parse_block(next_tokens: &[Token]) -> anyhow::Result<(Block, &[Token])> {
-//     // match next_token {
-//     //     [Token::If, _, Token::Then, ..] => {
-//     //         parse_block(&next_token[3..])?;
-//     //     }
-//     //     [a, b, ..] => {}
-//     //     _ => {}
-//     // }
-
-//     match next_tokens {
-//         [Token::Const] => {
-//             let consts = Vec::new();
-//             let i = 1;
-//             match next_tokens[i] {
-//                 Token::Identifier(str) =>
-//                 _ => {
-//                     return Err(anyhow::anyhow!(
-//                         "Unexpected next token for const block: {:?}",
-//                         next_tokens.get(i)
-//                     ))
-//                 }
-//             }
-//         }
-//         _ => {
-//             return Err(anyhow::anyhow!(
-//                 "Unexpected next token for block: {:?}",
-//                 next_tokens.get(0)
-//             ))
-//         }
-//     }
-// }
+impl Parseable for Statement {
+    fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
+        Err(ParseError::UnexpectedToken {
+            0: None,
+            1: "temp".into(),
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
