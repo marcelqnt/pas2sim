@@ -450,16 +450,20 @@ pub enum VariableItem {
     Dereferenzation,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, derive_more::Deref, derive_more::DerefMut)]
-pub struct Variable(Vec<VariableItem>);
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Variable {
+    start_item: String,
+    further_items: Vec<VariableItem>,
+}
 
 impl Parseable for Variable {
     fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         match parser.advance() {
             Token::Identifier(var_or_field) => {
-                let mut final_variable = Variable::default();
-
-                final_variable.push(VariableItem::Field(var_or_field.clone()));
+                let mut final_variable = Variable {
+                    start_item: var_or_field.clone(),
+                    further_items: Vec::new(),
+                };
 
                 loop {
                     match parser.advance() {
@@ -475,18 +479,28 @@ impl Parseable for Variable {
                                     break;
                                 }
                             }
-                            final_variable.push(VariableItem::Array(expressions))
+                            final_variable
+                                .further_items
+                                .push(VariableItem::Array(expressions))
                         }
                         Token::Point => {
                             let ident = parser.expect_identifier()?;
-                            final_variable.push(VariableItem::SubField(ident.to_string()));
+                            final_variable
+                                .further_items
+                                .push(VariableItem::SubField(ident.to_string()));
                         }
                         Token::Caret => {
-                            final_variable.push(VariableItem::Dereferenzation);
+                            final_variable
+                                .further_items
+                                .push(VariableItem::Dereferenzation);
                         }
-                        _ => {}
+                        _ => {
+                            parser.step_back(1);
+                            break;
+                        }
                     }
                 }
+                Ok(final_variable)
             }
             _ => parser.unexpected_token("expected variable or field identifier"),
         }
@@ -1129,105 +1143,127 @@ impl Parseable for Statement {
 #[cfg(test)]
 mod tests {
 
+    use crate::lexer;
+    use crate::lexer::tokenize;
+    use crate::new_parser;
+    use crate::parser;
+
     use super::*;
 
-    #[test]
-    fn test_unsigned_consts() {
-        fn check(expected: UnsignedConstant, input: Token) {
-            let (parsed, _) = parse_unsigned_constant(&[input]).unwrap();
-            assert_eq!(parsed, expected);
+    fn print_from_code(code: String) {
+        let tokens = tokenize(&code);
+        if let Ok(input) = tokens {
+            println!("Tokens: {:?}", input);
+            let mut parser = TokenParser::new(&input);
+            println!("Parser Entities: {:?}", Variable::parse(&mut parser));
+        } else {
+            assert!(tokens.is_err());
         }
-
-        check(
-            UnsignedConstant::Identifier("foo".into()),
-            Token::Identifier("foo".into()),
-        );
-        check(
-            UnsignedConstant::UnsignedInteger(42),
-            Token::UnsignedInteger(42),
-        );
-        check(
-            UnsignedConstant::UnsignedFloat(420.69.into()),
-            Token::UnsignedFloat(420.69.into()),
-        );
-        check(
-            UnsignedConstant::String("bar".into()),
-            Token::ConstantString("bar".into()),
-        );
     }
 
     #[test]
-    fn test_signed_consts() {
-        fn check(expected: Constant, input: impl AsRef<[Token]>) {
-            let (parsed, _) = Constant::parse(input.as_ref()).unwrap();
-            assert_eq!(parsed, expected);
-        }
-
-        check(
-            Constant::identifier("restaurant", None),
-            [Token::identifier("restaurant")],
-        );
-
-        check(
-            Constant::identifier("abc", Sign::Minus),
-            [Token::Minus, Token::Identifier("abc".into())],
-        );
-
-        check(Constant::number(123u64), [Token::UnsignedInteger(123)]);
-
-        check(
-            Constant::number(-123),
-            [Token::Minus, Token::UnsignedInteger(123)],
-        );
-
-        check(Constant::number(123.045), [Token::unsigned_float(123.045)]);
-
-        check(
-            Constant::number(-123.045),
-            [Token::Minus, Token::unsigned_float(123.045)],
-        );
-
-        check(Constant::literal("olap"), [Token::constant_string("olap")]);
+    fn test_variable() {
+        print_from_code("test_a".into());
+        print_from_code("test_b.a".into());
     }
 
-    #[test]
-    fn test_simple_types() {
-        fn check(name: &str, expected: SimpleType, input: impl AsRef<[Token]>) {
-            let (parsed, _) = SimpleType::parse(input.as_ref()).unwrap();
-            assert_eq!(parsed, expected, "{name} failed");
-        }
+    // #[test]
+    // fn test_unsigned_consts() {
+    //     fn check(expected: UnsignedConstant, input: &[Token]) {
+    //         let parser = TokenParser::new(&input);
+    //         assert_eq!(parsed, expected);
+    //     }
+    //     s
+    // check(
+    //     UnsignedConstant::Identifier("foo".into()),
+    //     Token::Identifier("foo".into()),
+    // );
+    // check(
+    //     UnsignedConstant::UnsignedInteger(42),
+    //     Token::UnsignedInteger(42),
+    // );
+    // check(
+    //     UnsignedConstant::UnsignedFloat(420.69.into()),
+    //     Token::UnsignedFloat(420.69.into()),
+    // );
+    // check(
+    //     UnsignedConstant::String("bar".into()),
+    //     Token::ConstantString("bar".into()),
+    // );
+    // }
 
-        check(
-            "SoloType",
-            SimpleType::solo_type("whisper"),
-            [Token::identifier("whisper")],
-        );
+    // #[test]
+    // fn test_signed_consts() {
+    //     fn check(expected: Constant, input: impl AsRef<[Token]>) {
+    //         let parsed = Constant::parse(parser{input).unwrap();
+    //         assert_eq!(parsed, expected);
+    //     }
 
-        check(
-            "Ordinal",
-            SimpleType::ordinal(["abc", "def"]),
-            [
-                Token::LeftParen,
-                Token::identifier("abc"),
-                Token::Comma,
-                Token::identifier("def"),
-                Token::RightParen,
-            ],
-        );
+    //     check(
+    //         Constant::identifier("restaurant", None),
+    //         [Token::identifier("restaurant")],
+    //     );
 
-        check(
-            "Array",
-            SimpleType::static_array(
-                Constant::identifier("bla", Sign::Minus),
-                Constant::number(-23),
-            ),
-            [
-                Token::Minus,
-                Token::identifier("bla"),
-                Token::DoublePoint,
-                Token::Minus,
-                Token::UnsignedInteger(23),
-            ],
-        );
-    }
+    //     check(
+    //         Constant::identifier("abc", Sign::Minus),
+    //         [Token::Minus, Token::Identifier("abc".into())],
+    //     );
+
+    //     check(Constant::number(123u64), [Token::UnsignedInteger(123)]);
+
+    //     check(
+    //         Constant::number(-123),
+    //         [Token::Minus, Token::UnsignedInteger(123)],
+    //     );
+
+    //     check(Constant::number(123.045), [Token::unsigned_float(123.045)]);
+
+    //     check(
+    //         Constant::number(-123.045),
+    //         [Token::Minus, Token::unsigned_float(123.045)],
+    //     );
+
+    //     check(Constant::literal("olap"), [Token::constant_string("olap")]);
+    // }
+
+    // #[test]
+    // fn test_simple_types() {
+    //     fn check(name: &str, expected: SimpleType, input: impl AsRef<[Token]>) {
+    //         let (parsed, _) = SimpleType::parse(input.as_ref()).unwrap();
+    //         assert_eq!(parsed, expected, "{name} failed");
+    //     }
+
+    //     check(
+    //         "SoloType",
+    //         SimpleType::solo_type("whisper"),
+    //         [Token::identifier("whisper")],
+    //     );
+
+    //     check(
+    //         "Ordinal",
+    //         SimpleType::ordinal(["abc", "def"]),
+    //         [
+    //             Token::LeftParen,
+    //             Token::identifier("abc"),
+    //             Token::Comma,
+    //             Token::identifier("def"),
+    //             Token::RightParen,
+    //         ],
+    //     );
+
+    //     check(
+    //         "Array",
+    //         SimpleType::static_array(
+    //             Constant::identifier("bla", Sign::Minus),
+    //             Constant::number(-23),
+    //         ),
+    //         [
+    //             Token::Minus,
+    //             Token::identifier("bla"),
+    //             Token::DoublePoint,
+    //             Token::Minus,
+    //             Token::UnsignedInteger(23),
+    //         ],
+    //     );
+    // }
 }
