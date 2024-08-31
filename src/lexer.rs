@@ -69,6 +69,8 @@ pub enum Token {
     Then,
     Else,
 
+    Case,
+
     While,
     Do,
     For,

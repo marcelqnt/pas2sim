@@ -1045,7 +1045,7 @@ pub struct ForLoop {
     first: Expression,
     last: Expression,
     direction: ForLoopDirection,
-    statement: Statement,
+    statement: Box<Statement>,
 }
 
 impl Parseable for ForLoop {
@@ -1072,28 +1072,57 @@ impl Parseable for ForLoop {
             first,
             direction,
             last,
-            statement: parser.parse()?,
+            statement: Box::new(parser.parse()?),
         })
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
-    Assignment(Variable, Expression),
+    Assignment(String, Expression),
     FunctionCall(FunctionCall),
-    SubStatements(Vec<Statement>),
+    SubStatements(Vec<Box<Statement>>),
     IfCondition(IfCondition),
     Case(Case),
     WhileLoop(WhileLoop),
     RepeatLoop(RepeatLoop),
+    ForLoop(ForLoop),
 }
 
 impl Parseable for Statement {
     fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
-        Err(ParseError::UnexpectedToken {
-            0: None,
-            1: "temp".into(),
-        })
+        match parser.advance() {
+            Token::Identifier(id) => {
+                if parser.expect(&Token::Assignment).is_ok() {
+                    parser.advance();
+
+                    Ok(Self::Assignment(id.into(), parser.parse()?))
+                } else {
+                    parser.step_back(1);
+
+                    Ok(Self::FunctionCall(parser.parse()?))
+                }
+            }
+            Token::Begin => {
+                let mut statements = Vec::new();
+                loop {
+                    statements.push(Box::new(parser.parse()?));
+
+                    match parser.advance() {
+                        Token::Semicolon => {}
+                        Token::End => break,
+                        _ => parser.unexpected_token("missing end for substatements")?,
+                    }
+                }
+                Ok(Self::SubStatements(statements))
+            }
+            Token::If => Ok(Self::IfCondition(parser.parse()?)),
+            Token::Case => Ok(Self::Case(parser.parse()?)),
+            Token::While => Ok(Self::WhileLoop(parser.parse()?)),
+            Token::Repeat => Ok(Self::RepeatLoop(parser.parse()?)),
+            Token::For => Ok(Self::ForLoop(parser.parse()?)),
+            _ => parser.unexpected_token("expected token for statement")?,
+        }
     }
 }
 
