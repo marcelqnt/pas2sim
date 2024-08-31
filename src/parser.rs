@@ -1150,12 +1150,16 @@ mod tests {
 
     use super::*;
 
-    fn print_from_code(code: String) {
+    fn print_from_code(code: String, expected: Variable) {
         let tokens = tokenize(&code);
         if let Ok(input) = tokens {
-            println!("Tokens: {:?}", input);
+            // println!("Tokens: {:?}", input);
             let mut parser = TokenParser::new(&input);
-            println!("Parser Entities: {:?}", Variable::parse(&mut parser));
+            let v = Variable::parse(&mut parser);
+            if let Ok(v) = v {
+                // println!("Parser Entities: {:?}", v);
+                assert_eq!(v, expected);
+            }
         } else {
             assert!(tokens.is_err());
         }
@@ -1163,8 +1167,20 @@ mod tests {
 
     #[test]
     fn test_variable() {
-        print_from_code("test_a".into());
-        print_from_code("test_b.a".into());
+        print_from_code(
+            "test_a".into(),
+            Variable {
+                start_item: "test_a".into(),
+                further_items: Vec::new(),
+            },
+        );
+        print_from_code(
+            "test_b.a".into(),
+            Variable {
+                start_item: "test_b".into(),
+                further_items: vec![VariableItem::SubField("a".into())],
+            },
+        );
     }
 
     // #[test]
