@@ -1051,25 +1051,29 @@ pub struct ForLoop {
 impl Parseable for ForLoop {
     fn parse(parser: &mut TokenParser) -> Result<Self, ParseError> {
         let var_name = parser.expect_identifier()?;
-        parser.expect(&Token::Assignments)?;
+
+        parser.expect(&Token::Assignment)?;
 
         let first = parser.parse()?;
 
-        let mut predirection = parser.one_of(&[Token::To, Token::Downto])?;
-
-        let mut direction = ForLoopDirection::To;
-
-        match predirection{
-            Token::To => {},
-            Token::Downto => direction = ForLoopDirection::Downto,
-            _ => parser.unexpected_token("expected to or downto")?,
-        }
+        let predirection = parser.one_of(&[Token::To, Token::Downto])?;
+        let direction = if *predirection == Token::Downto {
+            ForLoopDirection::Downto
+        } else {
+            ForLoopDirection::To
+        };
 
         let last = parser.parse()?;
+
         parser.expect(&Token::Do)?;
 
-todo!()
-        let mut res = ForLoop{var_name: var_name.into(), first, last, direction, parser.parse()?}
+        Ok(ForLoop {
+            var_name: var_name.into(),
+            first,
+            direction,
+            last,
+            statement: parser.parse()?,
+        })
     }
 }
 
